@@ -2,11 +2,13 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { ChatOpenAI } from "@langchain/openai";
-import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, BaseMessage, ToolMessage } from "@langchain/core/messages";
 import { MODEL, OPENAI_API_KEY } from "./config";
 import { VectorizationManager } from "./vectorization_manager";
 import { buildRetrieverTool } from "./tools";
 import { buildGraph } from "./graph";
+import { calculatorTool } from "./calculator_tool";
+import { webSearchTool } from "./web_search_tool";
 import { VectorStore } from "@langchain/core/vectorstores";
 
 const app = express();
@@ -34,8 +36,8 @@ function updateGraph() {
         streaming: true // Enable streaming
     });
 
-    graph = buildGraph(llm, [retrieverTool]);
-    console.log(`Graph updated for ${currentPdf}`);
+    graph = buildGraph(llm, [retrieverTool, calculatorTool, webSearchTool]);
+    console.log(`Graph updated for ${currentPdf} with extra tools (Calculator, Web Search)`);
 }
 
 // Routes
@@ -126,21 +128,28 @@ app.get('/api/chat', async (req, res) => {
 
             // If it's a tool output
             if (chunk.tools) {
-                const toolUrl = chunk.tools.messages?.[0]?.content; // Simplification
-                res.write(`data: ${JSON.stringify({ type: 'info', content: 'Using tool...' })}\n\n`);
+                const messages = chunk.tools.messages || [];
+                for (const msg of messages) {
+                    if (msg instanceof ToolMessage || (msg.type === 'tool')) {
+                        res.write(`data: ${JSON.stringify({ type: 'info', content: `Tool used: ${msg.name}` })}\n\n`);
+                        console.log(`[SSE: Info] Tool used: ${msg.name}`);
+                    }
+                }
             }
 
             // If it's LLM output
-            if (chunk.llm) { // Depending on node name
+            if (chunk.llm) {
                 const lastMsg = chunk.llm.messages?.[chunk.llm.messages.length - 1];
                 if (lastMsg) {
-                    // This is usually the FULL message for that step, not a token stream, 
-                    // unless we use specific streaming setup in LangGraph.
-                    // For "true" token streaming, we might need graph.streamEvents() if available in this validation
-                    // or just send the chunks. 
-
-                    // Sending the full generated message as one chunk for now (simulated stream of steps)
-                    res.write(`data: ${JSON.stringify({ type: 'answer', content: lastMsg.content })}\n\n`);
+                    // Check if lastMsg has tool calls
+                    if (lastMsg.tool_calls && lastMsg.tool_calls.length > 0) {
+                        for (const tc of lastMsg.tool_calls) {
+                            res.write(`data: ${JSON.stringify({ type: 'info', content: `Thinking... Using tool: ${tc.name}` })}\n\n`);
+                        }
+                    } else if (lastMsg.content) {
+                        // Regular answer
+                        res.write(`data: ${JSON.stringify({ type: 'answer', content: lastMsg.content })}\n\n`);
+                    }
                 }
             }
         }

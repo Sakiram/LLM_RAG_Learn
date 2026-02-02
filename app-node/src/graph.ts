@@ -15,12 +15,16 @@ export function buildGraph(llm: ChatOpenAI, tools: StructuredTool[]) {
 
     // Node definitions
     async function callLlm(state: AgentState) {
+        console.log("\n--- [Agent: Thinking] ---");
         const messages = state.messages;
-        const systemMessage = new SystemMessage("Answer questions using the PDF. Cite content.");
+        const systemMessage = new SystemMessage("Answer questions using tools if needed. If using a PDF tool, cite content. Be concise.");
 
-        // Combine system message with history for the prompt
-        // Note: We don't verify if system message is already in history because we construct it here.
         const response = await llmWithTools.invoke([systemMessage, ...messages]);
+
+        if (response.content) {
+            console.log(`[Agent: Response] ${response.content.toString().substring(0, 100)}${response.content.toString().length > 100 ? '...' : ''}`);
+        }
+
         return { messages: [response] };
     }
 
@@ -31,17 +35,24 @@ export function buildGraph(llm: ChatOpenAI, tools: StructuredTool[]) {
         }
 
         const results = [];
+        console.log(`--- [Agent: Taking Action] Using ${lastMessage.tool_calls.length} tool(s) ---`);
+
         for (const call of lastMessage.tool_calls) {
             const tool = toolsMap[call.name];
             if (tool) {
-                // tool.invoke expects the args directly usually, but check signature
-                // structured tool invoke
+                console.log(`[Tool Call: ${call.name}] Args: ${JSON.stringify(call.args)}`);
                 const output = await tool.invoke(call.args);
+                const content = typeof output === 'string' ? output : JSON.stringify(output);
+
+                console.log(`[Tool Result: ${call.name}] Output length: ${content.length} chars`);
+
                 results.push(new ToolMessage({
                     tool_call_id: call.id!,
                     name: call.name,
-                    content: typeof output === 'string' ? output : JSON.stringify(output)
+                    content: content
                 }));
+            } else {
+                console.warn(`[Agent: Warning] Tool ${call.name} not found!`);
             }
         }
         return { messages: results };
