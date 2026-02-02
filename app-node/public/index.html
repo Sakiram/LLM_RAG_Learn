@@ -1,0 +1,219 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Chat System</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        .section { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        select, input, button { padding: 10px; margin: 5px 0; border-radius: 4px; border: 1px solid #ddd; }
+        button { cursor: pointer; background-color: #007bff; color: white; border: none; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; }
+        #chat-history { height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; background: #fafafa; border-radius: 4px; }
+        .message { margin-bottom: 10px; padding: 10px; border-radius: 8px; max-width: 80%; }
+        .user-msg { background-color: #e3f2fd; margin-left: auto; color: #0d47a1; }
+        .ai-msg { background-color: #f1f8e9; margin-right: auto; color: #1b5e20; }
+        .error-msg { background-color: #ffebee; color: #c62828; text-align: center; }
+        .status { font-size: 0.9em; color: #666; margin-top: 5px; }
+        .typing { font-style: italic; color: #999; }
+        pre { white-space: pre-wrap; word-wrap: break-word; background: #eee; padding: 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📚 PDF Chat System</h1>
+        
+        <div class="section" id="setup-section">
+            <h3>1. Load PDF</h3>
+            <div style="display: flex; gap: 10px;">
+                <select id="pdf-select" style="flex-grow: 1;">
+                    <option value="">Loading available PDFs...</option>
+                </select>
+                <button id="load-btn" onclick="loadPdf()">Load & Vectorize</button>
+            </div>
+            <div id="load-status" class="status"></div>
+        </div>
+
+        <div class="section" id="chat-section">
+            <h3 id="chat-header">2. Chat</h3>
+            <div id="chat-history"></div>
+            <div style="display: flex; gap: 10px;">
+                <input type="text" id="user-input" placeholder="Ask a question about the PDF..." style="flex-grow: 1;" onkeypress="handleKeyPress(event)">
+                <button onclick="sendMessage()" id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        let currentEventSource = null;
+
+        // Init
+        window.onload = async () => {
+            await refreshPdfList();
+            checkStatus();
+        };
+
+        async function refreshPdfList() {
+            try {
+                const res = await fetch(`${API_URL}/pdfs`);
+                const data = await res.json();
+                const select = document.getElementById('pdf-select');
+                select.innerHTML = '<option value="">-- Select a PDF --</option>';
+                data.pdfs.forEach(pdf => {
+                    const opt = document.createElement('option');
+                    opt.value = pdf;
+                    opt.textContent = pdf;
+                    select.appendChild(opt);
+                });
+            } catch (e) {
+                console.error("Failed to fetch PDFs", e);
+            }
+        }
+
+        async function checkStatus() {
+            try {
+                const res = await fetch(`${API_URL}/status`);
+                const data = await res.json();
+                const statusDiv = document.getElementById('load-status');
+                const chatHeader = document.getElementById('chat-header');
+                
+                if (data.isReady && data.currentPdf) {
+                    statusDiv.textContent = `✅ Loaded: ${data.currentPdf}`;
+                    chatHeader.textContent = `2. Chat (Context: ${data.currentPdf})`;
+                } else {
+                    statusDiv.textContent = 'Please load a PDF to start.';
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadPdf() {
+            const filename = document.getElementById('pdf-select').value;
+            if (!filename) return alert("Please select a file");
+            
+            const btn = document.getElementById('load-btn');
+            const status = document.getElementById('load-status');
+            
+            btn.disabled = true;
+            status.textContent = "⏳ Vectorizing (this may take a moment)...";
+            
+            try {
+                const res = await fetch(`${API_URL}/vectorize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    status.textContent = `✅ Success: ${data.message}`;
+                    checkStatus();
+                    document.getElementById('chat-history').innerHTML = ''; // Clear chat on new file
+                } else {
+                    status.textContent = `❌ Error: ${data.error}`;
+                }
+            } catch (e) {
+                status.textContent = `❌ Error: ${e.message}`;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function appendMessage(content, type) {
+            const chatHistory = document.getElementById('chat-history');
+            const div = document.createElement('div');
+            div.className = `message ${type}-msg`;
+            
+            // Basic markdown handling (very simple)
+            // content = content.replace(/\n/g, '<br>');
+            // Using pre tag for formatting preservation for now or simple text
+            div.textContent = content;
+            
+            chatHistory.appendChild(div);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+            return div;
+        }
+
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') sendMessage();
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('user-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            // Add user message
+            appendMessage(message, 'user');
+            input.value = '';
+
+            // Create placeholder for AI response
+            const responseDiv = appendMessage("Thinking...", 'ai');
+            let fullResponse = "";
+
+            // Use EventSource for SSE
+            if (currentEventSource) {
+                currentEventSource.close();
+            }
+
+            const encodedMsg = encodeURIComponent(message);
+            const evtSource = new EventSource(`${API_URL}/chat?message=${encodedMsg}`);
+            currentEventSource = evtSource;
+
+            let firstChunk = true;
+
+            evtSource.onmessage = (event) => {
+                if (event.data === "[DONE]") {
+                    evtSource.close();
+                    currentEventSource = null;
+                    return;
+                }
+
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'error') {
+                        responseDiv.textContent = `Error: ${data.content}`;
+                        responseDiv.className += ' error-msg';
+                        evtSource.close();
+                    } 
+                    else if (data.type === 'answer') {
+                        if (firstChunk) {
+                            responseDiv.textContent = "";
+                            firstChunk = false;
+                        }
+                        // Since LangGraph stream currently returns FULL updated message in the simple implementation I did,
+                        // I'll just replace the content. If I improve server to stream tokens, I'd append.
+                        // But wait, in server.ts I did: `res.write(\`data: ${JSON.stringify({ type: 'answer', content: lastMsg.content })}\n\n\`);`
+                        // lastMsg.content IS the full content usually in standard invoke, but let's check LangGraph behavior.
+                        // Actually, graph.stream yields state. If the state has the FULL message history, the last message is the full message.
+                        // So replacing is correct for this implementation.
+                        
+                        // IF the server was streaming tokens, we would use +=. 
+                        // Let's assume replacement for now based on server.ts logic.
+                        responseDiv.textContent = data.content; 
+                        
+                        // Scroll to bottom
+                        const chatHistory = document.getElementById('chat-history');
+                        chatHistory.scrollTop = chatHistory.scrollHeight;
+                    }
+                } catch (e) {
+                    console.error("Parse error", e);
+                }
+            };
+
+            evtSource.onerror = (err) => {
+                console.error("EventSource failed:", err);
+                if (firstChunk) {
+                     responseDiv.textContent = "Connection failed or error occurred.";
+                }
+                evtSource.close();
+            };
+        }
+    </script>
+</body>
+</html>
